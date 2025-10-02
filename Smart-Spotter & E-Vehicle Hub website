@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart-Spotter & E-Vehicle Hub App (Drone4S)</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    
+    <style>
+        /* CSS for Layout and Styling */
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; display: flex; height: 100vh; background-color: #f0f0f0; }
+        #sidebar { 
+            width: 380px; 
+            padding: 20px; 
+            box-shadow: 4px 0 10px rgba(0,0,0,0.1); 
+            overflow-y: auto; 
+            background-color: #ffffff;
+            transition: width 0.3s ease;
+        }
+        #map { flex-grow: 1; height: 100%; }
+        h1 { color: #00796B; font-size: 1.6em; border-bottom: 3px solid #00796B; padding-bottom: 10px; margin-top: 0; }
+        h2 { font-size: 1.2em; color: #333; margin-top: 20px; }
+        .input-group { margin-bottom: 15px; }
+        .input-group label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
+        .input-group input { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; }
+        button { 
+            background-color: #4CAF50; 
+            color: white; 
+            padding: 12px 15px; 
+            border: none; 
+            border-radius: 5px; 
+            cursor: pointer; 
+            font-size: 1em; 
+            width: 100%; 
+            transition: background-color 0.3s;
+            margin-top: 10px;
+        }
+        button:hover { background-color: #45a049; }
+        #results { margin-top: 20px; padding-top: 15px; border-top: 1px dashed #ccc; }
+        .hub-card { 
+            border: 1px solid #ddd; 
+            padding: 15px; 
+            margin-bottom: 15px; 
+            border-radius: 6px; 
+            background-color: #f9f9f9; 
+        }
+        .status { font-weight: bold; font-size: 1.1em; }
+        .green { color: green; }
+        .yellow { color: orange; }
+        .red { color: red; }
+        #impact-dashboard { margin-top: 30px; padding: 15px; background-color: #e0f2f1; border-radius: 8px; }
+        #impact-dashboard p { margin: 5px 0; font-size: 0.9em; }
+        
+        /* Custom Marker Styles */
+        .leaflet-marker-icon.custom-marker div {
+            font-weight: bold;
+            text-align: center;
+            line-height: 20px;
+            color: white;
+            border: 3px solid white;
+            box-shadow: 1px 1px 3px rgba(0,0,0,0.5);
+        }
+    </style>
+</head>
+<body>
+    <div id="sidebar">
+        <h1>🚁 Smart-Spotter & E-Hub</h1>
+        <p>Uses **simulated drone vision** for real-time parking and shortest-path routing.</p>
+
+        <div class="input-group">
+            <label for="startPoint">Current Location (Start):</label>
+            <input type="text" id="startPoint" value="IIT Roorkee Main Gate" disabled>
+        </div>
+        <div class="input-group">
+            <label for="destination">Destination (e.g., Library):</label>
+            <input type="text" id="destination" placeholder="Enter Destination (e.g., Civil Dept)">
+        </div>
+        <button onclick="findRoute()">Find Eco-Parking & Route</button>
+
+        <div id="results">
+            <h2>Route Summary:</h2>
+            <div id="route-status"><p>Enter a destination to find the nearest available e-parking hub and your route.</p></div>
+        </div>
+        
+        <div id="impact-dashboard">
+            <h2>✨ Green Campus Impact Dashboard</h2>
+            <p><strong>Total Spots Monitored:</strong> <span id="total-spots">0</span></p>
+            <p><strong>Available Spots:</strong> <span id="avail-spots">0</span></p>
+            <p><strong>Simulated CO2 Reduction:</strong> <span id="co2-reduction">0 kg</span></p>
+        </div>
+    </div>
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+    <script>
+        // --- 1. CONFIGURATION AND DATA ---
+
+        // IIT Roorkee Central Coordinates (Approx.)
+        const CENTER_LAT = 29.8631;
+        const CENTER_LON = 77.8995;
+
+        // Mock Eco-Hub Data (Cycle/E-Scooter Parking)
+        const ecoHubs = [
+            // capacity and current are used for the simulated "Smart-Spotter" feature
+            { name: "North Campus Cycle Stand", lat: 29.8650, lon: 77.9050, capacity: 50, current: 40, type: 'Cycle/E-Bike' },
+            { name: "Admin Block Stand", lat: 29.8610, lon: 77.8980, capacity: 20, current: 19, type: 'E-Scooter' },
+            { name: "Faculty Residences Hub", lat: 29.8680, lon: 77.8930, capacity: 30, current: 5, type: 'Cycle/E-Bike' },
+            { name: "Sports Complex Parking", lat: 29.8590, lon: 77.9015, capacity: 40, current: 40, type: 'E-Scooter' }, // This one is full
+        ];
+
+        let map;
+        let routePolyline; // To store and clear the route
+
+        // --- 2. MAP INITIALIZATION ---
+
+        function initializeMap() {
+            map = L.map("map").setView([CENTER_LAT, CENTER_LON], 15);
+
+            // OpenStreetMap Tile Layer
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            }).addTo(map);
+
+            // Initial Hub Display and Dashboard Update
+            updateHubsAndDashboard();
+        }
+
+        function updateHubsAndDashboard() {
+            // Clear existing markers if any
+            map.eachLayer(layer => {
+                if (layer instanceof L.Marker) {
+                    map.removeLayer(layer);
+                }
+            });
+
+            let totalSpots = 0;
+            let availableSpots = 0;
+
+            ecoHubs.forEach(hub => {
+                // *** SIMULATED SMART-SPOTTER LOGIC ***
+                // Simulating a drone or static camera feed providing current occupancy data
+                const available = hub.capacity - hub.current;
+                const capacityPct = hub.current / hub.capacity;
+                
+                let color = capacityPct < 0.7 ? 'green' : (capacityPct < 1.0 ? 'orange' : 'red');
+                let status = color === 'green' ? 'Plenty' : (color === 'orange' ? 'Filling Fast' : 'Full');
+
+                totalSpots += hub.capacity;
+                availableSpots += available > 0 ? available : 0;
+
+                const marker = L.marker([hub.lat, hub.lon], {
+                    icon: L.divIcon({
+                        className: 'custom-marker',
+                        html: `<div style="background-color:${color}; width:24px; height:24px; border-radius:50%;"></div>`,
+                        iconSize: [30, 30],
+                        iconAnchor: [15, 15]
+                    })
+                }).addTo(map);
+
+                marker.bindPopup(
+                    `<b>${hub.name}</b><br>
+                     Type: ${hub.type}<br>
+                     Available: ${available} / ${hub.capacity}<br>
+                     Status: <span class="${color}">${status}</span>`
+                );
+            });
+
+            // Update Dashboard
+            document.getElementById('total-spots').textContent = totalSpots;
+            document.getElementById('avail-spots').textContent = availableSpots;
+            document.getElementById('co2-reduction').textContent = (availableSpots * 0.05).toFixed(2) + ' kg'; // Mock calculation
+        }
+
+        // Call map initialization
+        initializeMap();
+
+        // --- 3. ROUTING LOGIC (No MapmyIndia) ---
+
+        async function findRoute() {
+            const startText = document.getElementById('startPoint').value;
+            const destinationText = document.getElementById('destination').value;
+
+            if (!destinationText) {
+                alert("Please enter a destination.");
+                return;
+            }
+
+            document.getElementById('route-status').innerHTML = 'Searching for best available E-Hub and routing...';
+
+            try {
+                // A. Geocode Start and Destination (Using OpenStreetMap Nominatim)
+                const startCoords = await geocodeAddress(startText);
+                const destCoords = await geocodeAddress(destinationText);
+
+                if (!startCoords || !destCoords) {
+                    document.getElementById('route-status').innerHTML = 'Could not find start or destination coordinates. Try a simpler name.';
+                    return;
+                }
+
+                const [startLat, startLon] = startCoords;
+                const [destLat, destLon] = destCoords;
+
+                // B. Find Closest Available Eco-Hub
+                const availableHubs = ecoHubs.filter(hub => hub.current < hub.capacity);
+                if (availableHubs.length === 0) {
+                    document.getElementById('route-status').innerHTML = '🚫 All Eco-Hubs are currently full. Please try again later.';
+                    return;
+                }
+
+                let closestHub = availableHubs[0];
+                let minDistance = calculateDistance(closestHub.lat, closestHub.lon, destLat, destLon);
+
+                for (const hub of availableHubs) {
+                    const dist = calculateDistance(hub.lat, hub.lon, destLat, destLon);
+                    if (dist < minDistance) {
+                        minDistance = dist;
+                        closestHub = hub;
+                    }
+                }
+                
+                // C. Draw the Multi-Modal Route
+
+                // 1. Draw the assumed "Drive/Walk to Hub" route (Simple line for demo)
+                drawSimplePath([startCoords, [closestHub.lat, closestHub.lon]], '#666666', '5, 5'); 
+                
+                // 2. Draw the Eco-Route (Hub to Destination) - This is the primary part
+                // Using a simple straight line (shortest path) for the 'Eco-Route' component
+                const routeDistanceKm = calculateDistance(closestHub.lat, closestHub.lon, destLat, destLon);
+                drawSimplePath([[closestHub.lat, closestHub.lon], destCoords], '#4CAF50', '0'); 
+                
+                // Add start and end markers for the final leg (Hub and Destination)
+                L.marker([closestHub.lat, closestHub.lon]).addTo(map).bindPopup('**Eco-Hub Parking**').openPopup();
+                L.marker(destCoords).addTo(map).bindPopup('**Destination**');
+
+                // Update map view to fit all points
+                const bounds = L.latLngBounds([startCoords, destCoords, [closestHub.lat, closestHub.lon]]);
+                map.fitBounds(bounds, { padding: [50, 50] });
+
+                // D. Update Status
+                const ecoTimeMin = Math.round((routeDistanceKm / 5) * 60); // Assuming 5 km/h walking speed
+                
+                document.getElementById('route-status').innerHTML = `
+                    <div class="hub-card">
+                        ✅ **Nearest Available Hub:** ${closestHub.name}<br>
+                        🅿️ **Spots Left (from Vision):** ${closestHub.capacity - closestHub.current}<br>
+                        🚶 **Eco-Route (Walk/Ride) Distance:** ${routeDistanceKm.toFixed(2)} km<br>
+                        ⏱️ **Eco Time:** <span style="color: #00796B; font-weight: bold;">~${ecoTimeMin} minutes</span> (Shortest Path)
+                    </div>
+                `;
+
+            } catch (error) {
+                console.error("Routing Error:", error);
+                document.getElementById('route-status').innerHTML = 'An unexpected error occurred during the process.';
+            }
+        }
+
+
+        // --- 4. HELPER FUNCTIONS ---
+
+        // Helper function to geocode an address string using Nominatim (OpenStreetMap)
+        async function geocodeAddress(address) {
+            // Using a free, public Nominatim endpoint for demonstration
+            const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1&countrycodes=in`;
+            const response = await fetch(url);
+            const data = await response.json();
+            
+            if (data && data.length > 0) {
+                return [parseFloat(data[0].lat), parseFloat(data[0].lon)];
+            }
+            return null;
+        }
+
+        // Helper function to draw a simple line path on the map
+        function drawSimplePath(coords, color, dash) {
+            // Clear previous route
+            if (routePolyline) {
+                map.removeLayer(routePolyline);
+            }
+            
+            routePolyline = L.polyline(coords, {
+                color: color,
+                weight: 5,
+                opacity: 0.8,
+                dashArray: dash // e.g., '5, 5' for dashed, '0' for solid
+            }).addTo(map);
+        }
+
+        // Helper function for Haversine Distance (Shortest Path)
+        function calculateDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371; // Radius of Earth in km
+            const dLat = (lat2 - lat1) * (Math.PI / 180);
+            const dLon = (lon2 - lon1) * (Math.PI / 180);
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                      Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c; // Distance in km
+        }
+    </script>
+</body>
+</html>
